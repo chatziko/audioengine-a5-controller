@@ -196,7 +196,7 @@ of the speaker. The result looks like it came straight from the factory:
 To program our controller we can use ESPHome. It provides all the components
 we need as well as excellent integration with Home Assistant.
 The controller code is available in
-[audioengine-a5-controller.yaml](audioengine-a5-controllel.yaml), while
+[audioengine-a5-controller.yaml](audioengine-a5-controller.yaml), while
 [audioengine-a5.yaml](audioengine-a5.yaml) contains the generic node
 configuration (wifi, passwords, etc). To setup the board simply
 run
