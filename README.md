@@ -59,16 +59,17 @@ __WARNING:__ I'm just a hobbyist, I don't pretend I really know what I'm doing. 
 #### Audioengine A5 built-in controls
 
 The A5 has 3 controls located at the front of the speaker: a rotary encoder (with button), an IR receiver and an LED. All three are connected to the
-A5's board via a cable, conveniently equipped with a 9-pin JST connector
+A5's board via a cable, with a 9-pin JST connector
 so that it can be easily removed.
-The image below shows the cable and the place where it connects on the A5
+The image below shows the cable and the connector on the A5 side
 (the following [youtube video](https://www.youtube.com/watch?v=RtI95P0j_7A)
 also shows the internals of A5):
 
 ![](images/speaker-board.svg)
 
-All three controls are standard, so a bit of reverse engineering reveals
-the purpose of each pin (counting from left to right in the picture above):
+All three controls are standard, so a bit of reverse engineering reveals the
+purpose of each pin (counting from left to right in the A5 connector pictured
+above):
 
 ```
 Rotary encoder (pins 1-4)
@@ -91,13 +92,13 @@ Note that the A5 uses 5V logic, and all input pins have pullups.
 
 #### Components we need
 
-- An ESP32 development board (I used [this one](https://www.mischianti.org/wp-content/uploads/2020/11/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti.png), ESP8266 might also be sufficient)
-- A Logic Level Shifter with at least 4 channels (like [this one](https://github.com/sparkfun/Logic_Level_Bidirectional))
-- Two capacitors (0.1 μF)
-- Two resistors (100Ω and 1KΩ)
-- JST XH2.54 9 Pin male and female connectors
-- One LED (optional for debugging)
-- A 4cm x 6cm prototype board and spacers
+- An ESP32 development board (I used [this one](https://www.mischianti.org/wp-content/uploads/2020/11/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti.png), ESP8266 might also be sufficient).
+- A Logic Level Shifter with at least 4 channels (like [this one](https://github.com/sparkfun/Logic_Level_Bidirectional)).
+- Two capacitors (0.1 μF).
+- Two resistors (100Ω and 1KΩ).
+- JST XH2.54 9-pin male and female connectors.
+- An LED (optional for debugging).
+- A 4cm x 6cm prototype board and spacers.
 
 The plan is to connect our ESP32 between the controls and the A5.
 
