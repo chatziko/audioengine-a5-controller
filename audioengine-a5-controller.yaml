@@ -1,0 +1,584 @@
+
+substitutions:
+  IR_ADDRESS:  "0x00BF"
+  IR_POWER:    "0x807f"
+  IR_VOL_UP:   "0x906f"
+  IR_VOL_DOWN: "0xe01f"
+  IR_MUTE:     "0xc03f"
+  IR_PRESET:   "0xba45"
+
+  GPIO_CTRL_ROTARY_A:      "5"
+  GPIO_CTRL_ROTARY_B:      "18"
+  GPIO_CTRL_ROTARY_BUTTON: "19"
+  GPIO_CTRL_IR:            "3"
+  GPIO_CTRL_LED:           "23"
+
+  GPIO_A5_ROTARY_A:        "4"
+  GPIO_A5_ROTARY_B:        "16"
+  GPIO_A5_ROTARY_BUTTON:   "17"
+  GPIO_A5_IR:              "15"
+
+esphome:
+  name: ${name}
+  platform: ESP32
+  board: esp32doit-devkit-v1
+  on_boot:
+  # initial values for outputs (probably not needed, but better be safe)
+  - output.turn_off: a5_rotary_a
+  - output.turn_off: a5_rotary_b
+  - output.turn_off: a5_rotary_button
+  # sync
+  - script.execute: sync_speaker_state
+
+globals:
+  # The current state of the speaker.
+  - id: volume_cur
+    type: int
+    restore_value: on
+    initial_value: '0'
+  - id: power_cur
+    type: bool
+    restore_value: on
+    initial_value: '1'
+  - id: mute_cur
+    type: bool
+    restore_value: on
+    initial_value: '0'
+
+  # Non-persistent variables used in lambdas
+  - id: temp_steps
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: booting
+    type: bool
+    restore_value: no
+    initial_value: '1'
+  - id: last_update
+    type: long
+    restore_value: no
+    initial_value: '0'
+
+# The number component creates inputs that appear in HA UI, and
+# can be changed either from ESP32 or from HA.
+number:
+  - platform: template
+    id: volume_num
+    name: ${upper_name} Volume
+    icon: "mdi:volume-high"
+    min_value: 0
+    max_value: 50
+    step: 1
+    optimistic: on
+    initial_value: 20
+    on_value:
+      - logger.log: "Volume changed, updating"
+      - script.execute: update_speaker_state
+
+  - platform: template
+    id: preset_volume_num
+    name: ${upper_name} Preset Volume
+    icon: "mdi:volume-medium"
+    min_value: 0
+    max_value: 50
+    step: 1
+    optimistic: on
+    restore_value: on
+    initial_value: 20
+
+
+script:
+  # This script is called when anyof id(volume_num)/id(power_sw)/id(mute_sw) change. We have a single script
+  # for all, so that simultaneous calls are serialized, by setting "mode: queued"
+  # (parallel interactions with the speaker make it hard to predict the resulting state).
+  #
+  # When each execution starts, it is affected only by the value of id(volume_num)/id(power_sw)/id(mute_sw)
+  # at __that moment__, later changes are ignored and will be applied by the next execution.
+  #
+  - id: update_speaker_state
+    mode: queued
+    then:
+    - lambda: |-
+        // When multiple updates are queued, it is common that a previous update has already done
+        // the job. If so, stop immediately. Also disable while booting (until sync_speaker_state finishes).
+        if(id(booting) ||
+           (id(volume_num).state == id(volume_cur) &&
+            id(power_sw).state == id(power_cur ) &&
+            id(mute_sw ).state == id(mute_cur  )))
+          id(update_speaker_state).stop();
+
+        id(last_update) = id(ha_time).now().timestamp;
+
+      # Handle some interactions between the volume/power/mute controls
+    - logger.log:
+        format: "Update state: power %d -> %d, mute %d -> %d, volume %d -> %d"
+        args: [ "id(power_cur)", "id(power_sw).state", "id(mute_cur)", "id(mute_sw).state", "id(volume_cur)", "(uint)id(volume_num).state" ]
+    - lambda: |-
+        // When the speaker is in poweroff/mute mode, a VOL_UP/VOL_DOWN command wakes it up (and the command itlsef
+        // is ignored). So if volume is changed, we automatically set power=1 & mute=0
+        if(id(volume_cur) != id(volume_num).state) {
+          if(!id(power_sw).state) id(power_sw).turn_on ();
+          if( id(mute_sw ).state) id(mute_sw ).turn_off();
+        }
+
+        // Setting power=0 while mute is on: the poweroff command automatically cancels mute (no need to manually unmute),
+        // so we unset both id(mute_sw) and id(mute_cur), pretending it is already unset.
+        // Note: the opposite (setting mute when power=0), is not allowed by the mute_sw's turn_on_action!
+        if(!id(power_sw).state && id(mute_cur)) {
+          id(mute_sw).turn_off();
+          id(mute_cur) = false;
+        }
+    - logger.log:
+        format: "           -> power %d -> %d, mute %d -> %d, volume %d -> %d"
+        args: [ "id(power_cur)", "id(power_sw).state", "id(mute_cur)", "id(mute_sw).state", "id(volume_cur)", "(uint)id(volume_num).state" ]
+
+    # Do the updates
+    - script.execute: update_led
+
+    - script.execute: update_power_mute
+    - script.wait:    update_power_mute
+
+    - script.execute: update_volume
+    - script.wait:    update_volume
+
+    - script.wait: update_led   # make sure that the led effect has finished before starting another update
+
+
+  # Power and mute ##############################################################
+  - id: update_power_mute
+    then:
+    - if:
+        condition:
+          lambda: 'return id(mute_cur) != id(mute_sw).state && id(power_sw).state;'
+        then:
+        - logger.log: "Sending MUTE"
+        - remote_transmitter.transmit_nec:
+            address: $IR_ADDRESS
+            command: $IR_MUTE
+    - if:
+        condition:
+          lambda: 'return id(power_cur) != id(power_sw).state;'
+        then:
+        # Weird A5 beheviour: if we go to poweroff with volume == 0, waking up automatically sets volume = 50!!
+        # As a workaround hack, we set volume = 1 before poweroff (so we'll have volume = 1 after wakeup, not 0,
+        # but it's better than suddenly going all the way to 25!).
+        - if:
+            condition:
+              lambda: 'return !id(power_sw).state && id(volume_num).state == 0;'
+            then:
+            - lambda: 'id(volume_num).set(1);'
+            - script.execute: update_volume
+            - script.wait: update_volume
+
+        - logger.log: "Sending ROTARY BUTTON"
+        - output.turn_on: a5_rotary_button
+        - delay: 5ms
+        - output.turn_off: a5_rotary_button
+        - delay: 50ms
+    - lambda: |-
+        id(power_cur) = id(power_sw).state;
+        id(mute_cur) = id(mute_sw).state;
+
+  # Volume  ####################################################################
+  #
+  # Use the rotary encoder interface to communicate the chage to A5 (it's much
+  # faster and accurate than IR), simulating a rotary pulse with the
+  # corresponding number of steps. After executing, id(volume_cur) will be
+  # equal to id(volume_num)'s value at the start of the call.
+  #
+  - id: update_volume
+    then:
+    - lambda: |-
+        id(temp_steps) = id(volume_num).state - id(volume_cur);
+        if(id(temp_steps) == 0) return;          // nothing to do
+        id(volume_cur) = id(volume_num).state;
+
+        // to recover from a potential out-of-sync state, when we reach the bottom we add
+        // some extra steps to ensure that the volume really reaches 0.
+        if(id(volume_num).state == 0 ) id(temp_steps) -= 5;
+
+    - script.execute: send_rotary_pulses
+    - script.wait:    send_rotary_pulses
+
+  # Script that generates id(temp_steps) rotary pulses. Used by update_speaker_state & sync_speaker_state.
+  # Each one is a square pulse of 10ms HIGH + 10ms LOW, out of sync by 5ms between
+  # a5_rotary_a and a5_rotary_b (which one fires first determines the direction of movement).
+  # Maybe we could use PWM for this, but it's simple to do manually and allows for more control.
+  - id: send_rotary_pulses
+    then:
+    - logger.log:
+        format: "Sending %d ROTARY PULSES"
+        args: [ "id(temp_steps)" ]
+    - while: 
+        condition:
+          lambda: 'return id(temp_steps) != 0;'
+        then:
+        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_a : a5_rotary_b ).turn_on();"
+        - delay: 5ms
+        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_b : a5_rotary_a ).turn_on();"
+        - delay: 5ms
+        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_a : a5_rotary_b ).turn_off();"
+        - delay: 5ms
+        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_b : a5_rotary_a ).turn_off();"
+        - delay: 15ms     # some room to separate the commands, if missing sometimes a few steps are not recorded
+        - lambda: 'id(temp_steps) += (id(temp_steps) > 0 ? -1 : 1);'
+
+  # Script to update the led. It is launched by update_speaker_state and runs in parallel to it
+  - id: update_led
+    then:
+    # create a "blink" effect by first fading the led down to 0, and then fading it up to its correct value
+    - light.control:
+        id: ctrl_led_light
+        state: off
+        transition_length: 40ms
+    - delay: 40ms
+    - light.control:
+        id: ctrl_led_light
+        state: !lambda "return id(power_sw).state;"
+        brightness: !lambda "return 0.1 + 0.9 * (id(mute_sw).state ? 0 : id(volume_num).state) / 50;"
+        transition_length: 40ms
+
+
+  # This script "forces" the speaker state to match the values of id(volume_num)/id(power_sw)/id(mute_sw),
+  # __no matter when the intial state of the speaker is__. It's used on restart, to make sure that
+  # we are on sync with the speaker, before doing the normal updates.
+  #
+  - id: sync_speaker_state
+    then:
+    - delay: 3s   # maybe the speaker is also booting, wait a bit to be safe
+    - logger.log:
+        format: "Sync state: power %d, mute %d, volume %d"
+        args: [ "id(power_cur)", "id(mute_cur)", "id(volume_cur)" ]
+
+    # Start by sending 55 VOL_DOWN commands to the speaker, which always leads to the
+    # volume going down to 0 (and waking up, if it is in poweroff/mute mode).
+    - lambda: "id(temp_steps) = -55;"
+    - script.execute: send_rotary_pulses
+    - script.wait:    send_rotary_pulses
+
+    # We first update the volume (cause volume changes will cancel the poweroff/mute). We copy volume_cur to
+    # id(volume_num), set volume_cur = 0 (since the speaker current is at 0 volume), and update.
+    - lambda: |-
+        id(volume_num).set(id(volume_cur));
+        id(volume_cur) = 0;
+    - script.execute: update_volume
+    - script.wait:    update_volume
+    - delay: 200ms
+
+    # Similar update for power & mute
+    - lambda: |-
+        id(power_sw).publish_state(id(power_cur));
+        id(mute_sw ).publish_state(id(mute_cur ));
+        id(power_cur) = true;
+        id(mute_cur) = false;
+    - script.execute: update_power_mute
+    - script.wait:    update_power_mute
+
+    # Update the led
+    - script.execute: update_led
+    - script.wait:    update_led
+
+    # Done booting
+    - lambda: |-
+        id(last_update) = id(ha_time).now().timestamp;
+        id(booting) = false;
+
+
+# Handle the A5's rotary encoder, used to turn the volume up/down
+sensor:
+  - platform: rotary_encoder
+    id: ctrl_rotary
+    internal: on
+    resolution: 2
+    pin_a:
+      number: ${GPIO_CTRL_ROTARY_A}
+      mode: INPUT_PULLUP
+      inverted: True
+    pin_b:
+      number: ${GPIO_CTRL_ROTARY_B}
+      mode: INPUT_PULLUP
+      inverted: True
+    on_clockwise:
+      number.set:
+        id: volume_num
+        value: !lambda 'return id(volume_num).state + 1;'
+    on_anticlockwise:
+      number.set:
+        id: volume_num
+        value: !lambda 'return id(volume_num).state - 1;'
+
+
+binary_sensor:
+  - platform: gpio
+    id: ctrl_rotary_button
+    pin:
+      number: ${GPIO_CTRL_ROTARY_BUTTON}
+      mode: INPUT_PULLUP
+      inverted: True
+    on_multi_click:
+    - timing:
+        - ON for at most 0.5s
+      then:
+        # short press, toggle power
+        switch.toggle: power_sw
+    - timing:
+        - ON for at least 0.5s
+      then:
+        # long press, set volume to the preset
+        number.set:
+          id: volume_num
+          value: !lambda "return id(preset_volume_num).state;"
+
+# The power_sw / mute_sw switches are shown in the HA UI and allow to control
+# the speaker.
+switch:
+  - platform: template
+    id: power_sw
+    icon: "mdi:power"
+    name: ${upper_name} Power
+    optimistic: on      # a request to turn on/off directly changes the switch
+    on_turn_on:
+      - script.execute: update_speaker_state
+    on_turn_off:
+      - script.execute: update_speaker_state
+
+  - platform: template
+    id: mute_sw
+    icon: "mdi:volume-off"
+    name: ${upper_name} Mute
+    turn_on_action:                       # called when someone asks the switch to turn on
+      lambda: |-
+        if(id(power_cur))             // mute cannot be turned on while power is off
+          id(mute_sw).publish_state(1);
+    turn_off_action:                      # called when someone asks the switch to turn off
+    - lambda: |-
+        id(mute_sw).publish_state(0);
+    on_turn_on:
+    - script.execute: update_speaker_state
+    on_turn_off:
+    - script.execute: update_speaker_state
+
+  # Also a switch to easily restart the ESP32
+  - platform: restart
+    name: ${upper_name} Restart
+
+
+  ####################################### DEBUG SWITCHES ################################3
+  # - platform: template
+  #   name: "debug_send_power"
+  #   turn_on_action:
+  #     - logger.log: "sending Power"
+  #     - remote_transmitter.transmit_nec:
+  #         address: $IR_ADDRESS
+  #         command: $IR_POWER
+
+  # - platform: template
+  #   id: "debug_send_voldown"
+  #   name: "debug_send_voldown"
+  #   turn_on_action:
+  #     - logger.log: "sending voldown"
+  #     - remote_transmitter.transmit_nec:
+  #         address: $IR_ADDRESS
+  #         command: $IR_VOL_DOWN
+
+  # - platform: template
+  #   id: "debug_countdown_to_zero"
+  #   name: "debug_countdown_to_zero"
+  #   turn_on_action:
+  #     - logger.log: "sending voldown until zero"
+  #     - remote_transmitter.transmit_nec:
+  #         address: $IR_ADDRESS
+  #         command: $IR_VOL_DOWN
+  #         repeat:
+  #           times: !lambda "return id(volume_cur) + 2;"
+  #           wait_time: 1s
+  #     - lambda: 'id(volume_cur) = 0;'
+  #     - number.set:
+  #         id: volume_num
+  #         value: 0
+
+  # - platform: template
+  #   id: "debug_send_volup"
+  #   name: "debug_send_volup"
+  #   turn_on_action:
+  #     - logger.log: "sending volup"
+  #     - remote_transmitter.transmit_nec:
+  #         address: $IR_ADDRESS
+  #         command: $IR_VOL_UP
+
+  # - platform: template
+  #   id: "debug_send_mute"
+  #   name: "debug_send_mute"
+  #   turn_on_action:
+  #     - logger.log: "sending mure"
+  #     - remote_transmitter.transmit_nec:
+  #         address: $IR_ADDRESS
+  #         command: $IR_MUTE
+
+  # - platform: template
+  #   id: "debug_send_rotary_up"
+  #   name: "debug_send_rotary_up"
+  #   turn_on_action:
+  #     - logger.log: "sending rotary up"
+  #     - output.turn_on: a5_rotary_a
+  #     - delay: 5ms
+  #     - output.turn_on: a5_rotary_b
+  #     - delay: 5ms
+  #     - output.turn_off: a5_rotary_a
+  #     - delay: 5ms
+  #     - output.turn_off: a5_rotary_b
+  #     - delay: 10ms
+
+  # - platform: template
+  #   id: "debug_send_rotary_down"
+  #   name: "debug_send_rotary_down"
+  #   turn_on_action:
+  #     - logger.log: "sending rotary down"
+  #     - output.turn_on: a5_rotary_b
+  #     - delay: 5ms
+  #     - output.turn_on: a5_rotary_a
+  #     - delay: 5ms
+  #     - output.turn_off: a5_rotary_b
+  #     - delay: 5ms
+  #     - output.turn_off: a5_rotary_a
+  #     - delay: 10ms
+
+  # - platform: template
+  #   id: "debug_send_rotary_button"
+  #   name: "debug_send_rotary_button"
+  #   turn_on_action:
+  #     - logger.log: "pressing rotary button"
+  #     - output.turn_on: a5_rotary_button
+  #     - delay: 5ms
+  #     - output.turn_off: a5_rotary_button
+
+  # - platform: template
+  #   id: "debug_sync_speaker_state"
+  #   name: "debug_sync_speaker_state"
+  #   turn_on_action:
+  #     - script.execute: sync_speaker_state
+########################################################################################
+
+
+remote_transmitter:
+  # This is our way of communicating with A5 via "simulated" IR, sent directly to the pin
+  # where the A5's receiver is normlly connected.
+  - id: a5_ir
+    carrier_duty_percent: 100%    # No IR 38KHz modultion, just send the real (slow) signal to the A5's receiver
+    pin:
+      number: ${GPIO_A5_IR}
+      inverted: true
+      mode: OUTPUT_OPEN_DRAIN     # A5 uses a pullup on its input
+
+
+output:
+  - platform: ledc
+    id: ctrl_led
+    pin: ${GPIO_CTRL_LED}
+
+  # The following outputs go to the speaker's MCU
+  - platform: gpio
+    id: a5_rotary_a
+    pin:
+      number: ${GPIO_A5_ROTARY_A}
+      inverted: true
+      mode: OUTPUT_OPEN_DRAIN     # A5 uses a pullup on its input
+
+  - platform: gpio
+    id: a5_rotary_b
+    pin:
+      number: ${GPIO_A5_ROTARY_B}
+      inverted: true
+      mode: OUTPUT_OPEN_DRAIN     # A5 uses a pullup on its input
+
+  - platform: gpio
+    id: a5_rotary_button
+    pin:
+      number: ${GPIO_A5_ROTARY_BUTTON}
+      inverted: true
+      mode: OUTPUT_OPEN_DRAIN     # A5 uses a pullup on its input
+
+
+light:
+  - platform: monochromatic
+    id: ctrl_led_light
+    output: ctrl_led
+    default_transition_length: 0s
+
+
+# Handle the A5's IR receiver. The 4 commands (Up/Down/Power/Mute) of the A5's original
+# remote are supported, but we can easily add more commands, eg a command that sets
+# volume to some preset, or even use the IR receiver to trigger any Home Assistant automation.
+remote_receiver:
+  id: ctrl_ir
+  pin:
+    number: ${GPIO_CTRL_IR}
+    inverted: true
+  dump: [nec]
+  on_nec:
+  - logger.log:
+      format: "Got Nec IR, command %x"
+      args: [ 'x.command' ]
+  - lambda: |-
+      // Recreate the original remote's commands
+      if(x.command == $IR_VOL_UP)
+        id(volume_num).set( id(volume_num).state + 1 );
+      else if(x.command == $IR_VOL_DOWN)
+        id(volume_num).set( id(volume_num).state - 1 );
+      else if(x.command == $IR_POWER)
+        id(power_sw).toggle();
+      else if(x.command == $IR_MUTE)
+        id(mute_sw).toggle();
+      
+      // custom command to set a preset volume
+      else if(x.command == $IR_PRESET)
+        id(volume_num).set( id(preset_volume_num).state );
+
+# Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time:
+      # Every 10 minutes, between 3am and 8am
+      - seconds: 0
+        minutes: /10
+        hours: 3-8
+        then:
+          lambda: |-
+            long now = id(ha_time).now().timestamp;
+            if(id(last_update) != 0 && now != 0 && now - id(last_update) > 3*60*60)   // time is 0 if not synchronized
+              id(power_sw).turn_off();
+
+
+
+# Notes #################################################################################3
+#
+# esp32doit-devkit-v1 pins: https://www.mischianti.org/wp-content/uploads/2020/11/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti.png
+# GPIO02: onboard led
+#
+# IR codes from http://www.hifi-remote.com/forums/viewtopic.php?t=15739
+#
+# OBC 1 = Power
+# 0000 006C 0000 0022 015B 00AD 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0622
+# Code value     0xbf807f
+# 
+# OBC 3 = Mute
+# 0000 006C 0000 0022 015B 00AD 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0622
+# Code value     0xbfc03f
+# 
+# OBC 7 = Vol-
+# 0000 006C 0000 0022 015B 00AD 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0622
+# Code value     0xbfe01f
+# 
+# OBC 9 = Vol+
+# 0000 006C 0000 0022 015B 00AD 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0041 0016 0016 0016 0016 0016 0041 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0016 0041 0016 0041 0016 0016 0016 0041 0016 0041 0016 0041 0016 0041 0016 0622
+# Code value     0xbf906f
+# 
+# To get the address and command from the raw hex use the gc_decode tool from https://github.com/crankyoldgit/IRremoteESP8266
+# Eg:
+# ./gc_decode -prontohex "0000 006C ..."
+# get output: Code value     0xbf807f 
+# use values =>
+#    address: 0x00BF
+#    command: 0x807F
+

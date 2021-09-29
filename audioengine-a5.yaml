@@ -1,0 +1,35 @@
+# This file contains the generic setup for the node (wifi, passowrds, etc),
+# please adapt it to your setup.  The actual controller code is loaded as a
+# package.
+
+substitutions:
+  name: audioengine-a5
+  upper_name: Audioengine A5
+
+wifi:
+  ssid: ...
+  password: ...
+  fast_connect: true
+  manual_ip:
+    static_ip: ...
+    gateway: ...
+    subnet: ...
+  reboot_timeout: 0s    # don't restart if no wifi (we can always restart the speaker if needed)
+  ap:                   # access point in case of connection failure
+    ssid: "...
+    password: ...
+
+api:
+  password: ...
+
+ota:
+  password: ...
+
+logger:
+  level: DEBUG
+
+status_led:
+  pin: GPIO2
+
+packages:
+  audioengine-a5-controller: !include audioengine-a5-controller.yaml
