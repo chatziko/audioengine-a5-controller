@@ -56,6 +56,8 @@ its state.
 
 __WARNING:__ I'm just a hobbyist, I don't pretend I really know what I'm doing. Proceed at your own risk.
 
+#### Audioengine A5 built-in controls
+
 The A5 has 3 controls located at the front of the speaker: a rotary encoder (with button), an IR receiver and an LED. All three are connected to the
 A5's board via a cable, conveniently equipped with a 9-pin JST connector
 so that it can be easily removed.
@@ -86,14 +88,25 @@ LED (pins 8-9)
 ```
 Note that the A5 uses 5V logic, and all input pins have pullups.
 
-So we just need to connect our ESP32 between the controls and the A5.
+
+#### Components we need
+
+- An ESP32 development board (I used [this one](https://www.mischianti.org/wp-content/uploads/2020/11/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti.png), ESP8266 might also be sufficient)
+- A Logic Level Shifter with at least 4 channels (like [this one](https://github.com/sparkfun/Logic_Level_Bidirectional))
+- Two capacitors (0.1 μF)
+- Two resistors (100Ω and 1KΩ)
+- JST XH2.54 9 Pin male and female connectors
+- One LED (optional for debugging)
+- A 4cm x 6cm prototype board and spacers
+
+The plan is to connect our ESP32 between the controls and the A5.
 
 
-#### Controls  <->  ESP32
+#### Connecting the controls to the ESP32
 
 The connections between the controls and the ESP32 are shown below.
 The GPIOs can vary of course, depending on the exact board we use
-(mine is [this one](https://www.mischianti.org/wp-content/uploads/2020/11/ESP32-DOIT-DEV-KIT-v1-pinout-mischianti.png)).
+(mine is 
 ```
 Rotary
 1. Pin A   <->  GPIO05    <->  0.1 μF cap.  <->  GND
@@ -118,12 +131,12 @@ one, no more turning the knob one way and have the volume jump the other way.
 Note also that the IR receiver works happily with the ESP32's 3V logic.
 
 
-#### A5 <-> ESP32
+#### Connecting the A5 board to the ESP32
 
-On the other side, we need to connect ESP32 to A5 so that we can output
-data to it. Since A5's inputs have 5V pullups, we need a 
-logic level shifter with 4 channels (like [this one](https://github.com/sparkfun/Logic_Level_Bidirectional)) to avoid frying the ESP32.
-The connections are shown below:
+On the other side, we need to connect ESP32 to A5 so that we can output data to
+it. Since A5's inputs have 5V pullups, we need all communication to pass through
+the logic level shifter, to avoid frying the ESP32.  The connections are shown
+below:
 
 ```
 Rotary
@@ -147,7 +160,7 @@ it to A5's output, to be able to see the speaker's original light while
 debugging.
 
 
-#### Power
+#### Powering the ESP32
 
 The A5 has a USB plug in the back which can be used to charge a smartphone
 while playing music. The USB is connected to the 5V power supply shown
@@ -162,16 +175,15 @@ both the ESP32 and the USB, if one wishes to keep it.
 
 #### Assembling and mounting the board
 
-The board will go inside the speaker, so we need a clean job.
-We put all the pieces together, solder them to a 4cm x 6cm board
-and add JST terminals for easy connection and the foamy cable
-for power. The result:
+The board will go inside the speaker, so we need a clean job.  We put all the
+pieces together, solder them to a 4cm x 6cm prototype board, add JST
+terminals for easy connection and the foamy cable for power. The result:
 
 ![](images/controller.jpg)
 
 Finally, next to the A5's main board there is a smaller board
 holding some of the speaker's terminals in the back. Using some spacers,
-we can very conveniently mount our board on top of it, there is
+we can very conveniently mount our board on top of it. There is
 enough space so that it does not interfere with any other component
 of the speaker. The result looks like it came straight from the factory:
 
