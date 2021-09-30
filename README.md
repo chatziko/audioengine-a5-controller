@@ -1,15 +1,14 @@
-## Embedded controller for Audioengine A5
+## Embedded controller for Audioengine A5+
 
 ![](images/home-assistant-ui.png)
 
-The [Audioengine
-A5](https://audioengineusa.com/shop/poweredspeakers/a5-plus-classic-speakers/)
+The [Audioengine A5+](https://audioengineusa.com/shop/poweredspeakers/a5-plus-classic-speakers/)
 (classic model, no bluetooth) is a fantastic set of powered speakers. However,
 it might be annoying to have an essential part of your living room controlled
 only by a physical button and IR remote.
 
 This project builds an ESP32 controller (based on [ESPHome](https://esphome.io/))
-embedded in Audioengine A5, with two main features:
+embedded in Audioengine A5+, with two main features:
 
 1. Remote control and automation
     - The speaker's Power (sleep), Volume and Mute can be controlled via [Home Assistant](https://home-assistant.io/) and used in automations.
@@ -23,10 +22,11 @@ embedded in Audioengine A5, with two main features:
     - The LED turns off (instead of blinking) when the speaker is off.
     - Long pressing the physical button sets the volume to a preset level.
     - Smoother rotary control.
-    - The IR codes can be modified so any remote can be used.
-    - Add an IR command to set the volume to a preset level.
-    - Even add IR commands that trigger any Home Assistant
-    automation.
+    - The IR codes can be modified, eg to replace the original remote with an arbitrary
+      one, use multiple remotes simultaneously, use unutilized buttons from the TV remote
+      to control the speakers, etc.
+    - An IR command can be added to set the volume to a preset level.
+    - Or even add IR commands that trigger any Home Assistant automation.
 
 
 ## Idea
@@ -39,7 +39,7 @@ or Arduino/ESP device. However this has several drawbacks:
 - Most importantly, Home Assistant is completely unaware of any manual inputs to
 the speaker. This is particularly annoying for speakers with a single "toggle
 power"  command (instead of separate "on" and "off"), such as the Audioengine
-A5.  We might want to turn the speaker on and end up doing the exact opposite,
+A5+.  We might want to turn the speaker on and end up doing the exact opposite,
 because the speaker was already manually turned on!
 
 So we opt for a more advanced solution:
@@ -56,7 +56,7 @@ its state.
 
 __WARNING:__ I'm just a hobbyist, I don't pretend I really know what I'm doing. Proceed at your own risk.
 
-#### Audioengine A5 built-in controls
+#### Audioengine A5+ built-in controls
 
 The A5 has 3 controls located at the front of the speaker: a rotary encoder (with button), an IR receiver and an LED. All three are connected to the
 A5's board via a cable, with a 9-pin JST connector
@@ -106,8 +106,7 @@ The plan is to connect our ESP32 between the controls and the A5.
 #### Connecting the controls to the ESP32
 
 The connections between the controls and the ESP32 are shown below.
-The GPIOs can vary of course, depending on the exact board we use
-(mine is 
+The GPIOs can vary of course, depending on the exact board we use.
 ```
 Rotary
 1. Pin A   <->  GPIO05    <->  0.1 μF cap.  <->  GND
@@ -216,8 +215,8 @@ simulate the control outputs and send them to the A5's input pins:
 [`remote_transmitter`](https://esphome.io/components/remote_transmitter.html)
 component, and pretend that pin 5 of the A5 is an IR transmitter.
 Since it's not really a transmitter, we just need to set
-`carrier_duty_percent: 100%` to keep only "real" low frequency IR signal
-without the high frequency modulation of an IR LED.
+`carrier_duty_percent: 100%` to keep only the "real" (low frequency) IR signal
+without the (high frequency) modulation of an IR LED.
 
 - For the rotary encoder, we manually generate the encoder's signal
 by bit-banging, its format is quite simple. (I also tried to do it
@@ -232,7 +231,7 @@ The communication with Home Assistant is done via the
 [`switch`](https://esphome.io/components/switch/gpio.html) (for Power/Mute)
 and [`number`](https://esphome.io/components/number/template.html) (for Volume)
 components.
-Changes to these components trigger the `update_speaker_state` which
+Changes to these components trigger the `update_speaker_state` script which
 transmits the changes to the speaker (serializing them in case of multiple changes).
 Note that the Volume is displayed in Home Assistant as a textbox by default;
 to display it as a slider use the following [lovelace
@@ -241,8 +240,8 @@ plugin](https://github.com/thomasloven/lovelace-slider-entity-row).
 The speaker's current state is stored in the `power_cur, mute_cur, volume_cur`
 global variables, which should always match the speaker's real state.
 In case these variables become out of sync with the speaker for any reason,
-the `sync_speaker_state` is executed on every boot to restore the synchronization.
-This is achieved by forcing the volume to 0 (by sending lots of "Volume Down"),
+the `sync_speaker_state` script is executed on every boot to restore the synchronization.
+This is achieved by forcing the volume to 0 (by sending lots of "Volume Down" commands),
 and then increasing it again to the desired value.
 
 
