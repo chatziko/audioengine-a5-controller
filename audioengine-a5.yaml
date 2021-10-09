@@ -21,6 +21,7 @@ wifi:
 
 api:
   password: ...
+  reboot_timeout: 0s    # don't restart if no HA connection (we can always restart the speaker if needed)
 
 ota:
   password: ...
