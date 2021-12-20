@@ -1,11 +1,15 @@
 
 substitutions:
   IR_ADDRESS:  "0x00BF"
-  IR_POWER:    "0x807f"
-  IR_VOL_UP:   "0x906f"
-  IR_VOL_DOWN: "0xe01f"
+  # IR_POWER:    "0x807f"
+  # IR_VOL_UP:   "0x906f"
+  # IR_VOL_DOWN: "0xe01f"
   IR_MUTE:     "0xc03f"
   IR_PRESET:   "0xba45"
+  # The remote's memory probably was erased, these are probably its default values
+  IR_POWER:    "0xfe01"
+  IR_VOL_UP:   "0xf609"
+  IR_VOL_DOWN: "0xf807"
 
   GPIO_CTRL_ROTARY_A:      "5"
   GPIO_CTRL_ROTARY_B:      "18"
