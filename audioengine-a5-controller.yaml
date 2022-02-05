@@ -7,9 +7,22 @@ substitutions:
   IR_MUTE:     "0xc03f"
   IR_PRESET:   "0xba45"
   # The remote's memory probably was erased, these are probably its default values
-  IR_POWER:    "0xfe01"
-  IR_VOL_UP:   "0xf609"
-  IR_VOL_DOWN: "0xf807"
+  # IR_POWER:    "0xfd02"
+  # IR_VOL_UP:   "0xf609"
+  # IR_VOL_DOWN: "0xf807"
+  # # To control the music
+  # IR_PLAY:  "0xfe01"
+  # IR_PREV:  "0xeb14"
+  # IR_NEXT:  "0xea15"
+
+  # Apple remote
+  IR_POWER:    "0xdf03"
+  IR_VOL_UP:   "0xdf0a"
+  IR_VOL_DOWN: "0xdf0c"
+  IR_PLAY:    "0xdf05"
+  IR_PREV:    "0xdf09"
+  IR_NEXT:    "0xdf06"
+  IR_RELEASE: "0xdf07"
 
   GPIO_CTRL_ROTARY_A:      "5"
   GPIO_CTRL_ROTARY_B:      "18"
@@ -59,6 +72,14 @@ globals:
     restore_value: no
     initial_value: '1'
   - id: last_update
+    type: long
+    restore_value: no
+    initial_value: '0'
+  - id: last_ir_command
+    type: long
+    restore_value: no
+    initial_value: '0'
+  - id: last_ir_time
     type: long
     restore_value: no
     initial_value: '0'
@@ -519,12 +540,13 @@ remote_receiver:
   pin:
     number: ${GPIO_CTRL_IR}
     inverted: true
-  dump: [nec]
+  # dump: [nec]
+  dump: [nec, raw]
   on_nec:
-  - logger.log:
-      format: "Got Nec IR, command %x"
-      args: [ 'x.command' ]
-  - lambda: |-
+    lambda: |-
+      ESP_LOGD("on_nec", "Got Nec IR, command %x", x.command);
+      long last = id(last_ir_command);
+
       // Recreate the original remote's commands
       if(x.command == $IR_VOL_UP)
         id(volume_num).set( id(volume_num).state + 1 );
@@ -538,6 +560,43 @@ remote_receiver:
       // custom command to set a preset volume
       else if(x.command == $IR_PRESET)
         id(volume_num).set( id(preset_volume_num).state );
+
+      // control music. The apple remote sends a code on press (eg IR_PLAY), then keeps sending raw messages while pressing,
+      // and finally sends IR_RELEASE on release. We handle music buttons on release to treat long presses differently.
+      else if(x.command == $IR_RELEASE && (last == $IR_PLAY || last == $IR_NEXT || last == $IR_PREV)) {
+        api::HomeassistantServiceResponse resp;
+        resp.service = "esphome.appd.spotify.";
+        resp.service += last == $IR_PLAY ? "play_pause" : last == $IR_NEXT ? "next" : "previous";
+        ESP_LOGD("main", resp.service.c_str());
+        resp.is_event = true;
+        api::global_api_server->send_homeassistant_service_call(resp);
+
+        id(update_led).execute();   // blink the led to show that the command ran
+      }
+      
+      id(last_ir_command) = x.command;
+      id(last_ir_time) = id(ha_time).now().timestamp;
+
+  on_raw:
+    lambda: |-
+      long last = id(last_ir_command);
+      long now = id(ha_time).now().timestamp;
+      if(!(
+        (last == $IR_NEXT || last == $IR_PREV) &&                           // we are between IR_PREV/IR_NEXT and IR_RELEASE
+        id(last_ir_time) != 0 && now != 0 && now == id(last_ir_time) + 1    // pressing for 1 second
+      )) return;
+
+      api::HomeassistantServiceResponse resp;
+      resp.service = "esphome.appd.spotify.";
+      resp.service += last == $IR_NEXT ? "next_playlist" : "previous_playlist";
+      ESP_LOGD("main", resp.service.c_str());
+      resp.is_event = true;
+      api::global_api_server->send_homeassistant_service_call(resp);
+
+      id(update_led).execute();   // blink the led to show that the command ran
+
+      id(last_ir_command) = 0;    // avoid handling future presses, or handling prev/next on release
+
 
 # Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
 time:
