@@ -1,10 +1,10 @@
 
 substitutions:
-  IR_ADDRESS:  "0x00BF"
+  IR_ADDRESS:  "0xfd00"
   # IR_POWER:    "0x807f"
   # IR_VOL_UP:   "0x906f"
   # IR_VOL_DOWN: "0xe01f"
-  IR_MUTE:     "0xc03f"
+  IR_MUTE:     "0xfc03"
   IR_PRESET:   "0xba45"
   # The remote's memory probably was erased, these are probably its default values
   # IR_POWER:    "0xfd02"
@@ -75,14 +75,14 @@ globals:
     type: long
     restore_value: no
     initial_value: '0'
-  - id: last_ir_command
-    type: long
+  - id: ir_raw_codes
+    type: int
     restore_value: no
     initial_value: '0'
-  - id: last_ir_time
-    type: long
+  - id: spotify_event
+    type: std::string
     restore_value: no
-    initial_value: '0'
+    initial_value: '""'
 
 # The number component creates inputs that appear in HA UI, and
 # can be changed either from ESP32 or from HA.
@@ -307,6 +307,23 @@ script:
     - lambda: |-
         id(last_update) = id(ha_time).now().timestamp;
         id(booting) = false;
+
+    # Sends a spotify event, delayed so that we can handle double IR commands
+  - id: send_spotify_event
+    then:
+    - delay: 200ms   # wait, to handle long presses
+    - lambda: |-
+        ESP_LOGD("send_spotify_event", "%s, %d", id(spotify_event).c_str(), id(ir_raw_codes));
+
+        // the apple remote sends raw events while the button is pressed. If 3 arrive during the 200ms delay
+        // we consider this a long press, and do prev_playlist/next_playlist instead of prev/next.
+        if(id(ir_raw_codes) >= 3 && id(spotify_event) != "esphome.appd.spotify.play_pause")
+          id(spotify_event) += "_playlist";
+
+        api::HomeassistantServiceResponse resp;
+        resp.service = id(spotify_event);
+        resp.is_event = true;
+        api::global_api_server->send_homeassistant_service_call(resp);
 
 
 # Handle the A5's rotary encoder, used to turn the volume up/down
@@ -545,7 +562,6 @@ remote_receiver:
   on_nec:
     lambda: |-
       ESP_LOGD("on_nec", "Got Nec IR, command %x", x.command);
-      long last = id(last_ir_command);
 
       // Recreate the original remote's commands
       if(x.command == $IR_VOL_UP)
@@ -561,42 +577,18 @@ remote_receiver:
       else if(x.command == $IR_PRESET)
         id(volume_num).set( id(preset_volume_num).state );
 
-      // control music. The apple remote sends a code on press (eg IR_PLAY), then keeps sending raw messages while pressing,
-      // and finally sends IR_RELEASE on release. We handle music buttons on release to treat long presses differently.
-      else if(x.command == $IR_RELEASE && (last == $IR_PLAY || last == $IR_NEXT || last == $IR_PREV)) {
-        api::HomeassistantServiceResponse resp;
-        resp.service = "esphome.appd.spotify.";
-        resp.service += last == $IR_PLAY ? "play_pause" : last == $IR_NEXT ? "next" : "previous";
-        ESP_LOGD("main", resp.service.c_str());
-        resp.is_event = true;
-        api::global_api_server->send_homeassistant_service_call(resp);
+      // control music.
+      else if(x.command == $IR_PLAY || x.command == $IR_NEXT || x.command == $IR_PREV) {
+        id(spotify_event) = "esphome.appd.spotify.";
+        id(spotify_event) += x.command == $IR_PLAY ? "play_pause" : x.command == $IR_NEXT ? "next" : "previous";
+        id(ir_raw_codes) = 0;
+
+        id(send_spotify_event).execute();
 
         id(update_led).execute();   // blink the led to show that the command ran
       }
-      
-      id(last_ir_command) = x.command;
-      id(last_ir_time) = id(ha_time).now().timestamp;
-
   on_raw:
-    lambda: |-
-      long last = id(last_ir_command);
-      long now = id(ha_time).now().timestamp;
-      if(!(
-        (last == $IR_NEXT || last == $IR_PREV) &&                           // we are between IR_PREV/IR_NEXT and IR_RELEASE
-        id(last_ir_time) != 0 && now != 0 && now == id(last_ir_time) + 1    // pressing for 1 second
-      )) return;
-
-      api::HomeassistantServiceResponse resp;
-      resp.service = "esphome.appd.spotify.";
-      resp.service += last == $IR_NEXT ? "next_playlist" : "previous_playlist";
-      ESP_LOGD("main", resp.service.c_str());
-      resp.is_event = true;
-      api::global_api_server->send_homeassistant_service_call(resp);
-
-      id(update_led).execute();   // blink the led to show that the command ran
-
-      id(last_ir_command) = 0;    // avoid handling future presses, or handling prev/next on release
-
+    lambda: id(ir_raw_codes)++;   // just count, see the send_spotify_event script
 
 # Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
 time:
