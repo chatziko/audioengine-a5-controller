@@ -71,10 +71,10 @@ globals:
     type: bool
     restore_value: no
     initial_value: '1'
-  - id: last_update
-    type: long
-    restore_value: no
-    initial_value: '0'
+  # - id: last_update
+  #   type: long
+  #   restore_value: no
+  #   initial_value: '0'
   - id: ir_raw_codes
     type: int
     restore_value: no
@@ -132,7 +132,7 @@ script:
             id(mute_sw ).state == id(mute_cur  )))
           id(update_speaker_state).stop();
 
-        id(last_update) = id(ha_time).now().timestamp;
+        // id(last_update) = id(ha_time).now().timestamp;
 
       # Handle some interactions between the volume/power/mute controls
     - logger.log:
@@ -305,7 +305,7 @@ script:
 
     # Done booting
     - lambda: |-
-        id(last_update) = id(ha_time).now().timestamp;
+        // id(last_update) = id(ha_time).now().timestamp;
         id(booting) = false;
 
     # Sends a spotify event, delayed so that we can handle double IR commands
@@ -591,19 +591,19 @@ remote_receiver:
     lambda: id(ir_raw_codes)++;   // just count, see the send_spotify_event script
 
 # Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
-time:
-  - platform: homeassistant
-    id: ha_time
-    on_time:
-      # Every 10 minutes, between 3am and 8am
-      - seconds: 0
-        minutes: /10
-        hours: 3-8
-        then:
-          lambda: |-
-            long now = id(ha_time).now().timestamp;
-            if(id(last_update) != 0 && now != 0 && now - id(last_update) > 3*60*60)   // time is 0 if not synchronized
-              id(power_sw).turn_off();
+# time:
+#   - platform: homeassistant
+#     id: ha_time
+#     on_time:
+#       # Every 10 minutes, between 3am and 8am
+#       - seconds: 0
+#         minutes: /10
+#         hours: 3-8
+#         then:
+#           lambda: |-
+#             long now = id(ha_time).now().timestamp;
+#             if(id(last_update) != 0 && now != 0 && now - id(last_update) > 3*60*60)   // time is 0 if not synchronized
+#               id(power_sw).turn_off();
 
 
 
