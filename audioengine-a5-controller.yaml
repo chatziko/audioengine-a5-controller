@@ -191,7 +191,7 @@ script:
             condition:
               lambda: 'return !id(power_sw).state && id(volume_num).state == 0;'
             then:
-            - lambda: 'id(volume_num).set(1);'
+            - lambda: 'id(volume_num).make_call().set_value(1).perform();'
             - script.execute: update_volume
             - script.wait: update_volume
 
@@ -284,7 +284,7 @@ script:
     # We first update the volume (cause volume changes will cancel the poweroff/mute). We copy volume_cur to
     # id(volume_num), set volume_cur = 0 (since the speaker current is at 0 volume), and update.
     - lambda: |-
-        id(volume_num).set(id(volume_cur));
+        id(volume_num).make_call().set_value((id(volume_cur))).perform();
         id(volume_cur) = 0;
     - script.execute: update_volume
     - script.wait:    update_volume
@@ -565,9 +565,9 @@ remote_receiver:
 
       // Recreate the original remote's commands
       if(x.command == $IR_VOL_UP)
-        id(volume_num).set( id(volume_num).state + 1 );
+        id(volume_num).make_call().set_value( id(volume_num).state + 1 ).perform();
       else if(x.command == $IR_VOL_DOWN)
-        id(volume_num).set( id(volume_num).state - 1 );
+        id(volume_num).make_call().set_value( id(volume_num).state - 1 ).perform();
       else if(x.command == $IR_POWER)
         id(power_sw).toggle();
       else if(x.command == $IR_MUTE)
@@ -575,7 +575,7 @@ remote_receiver:
       
       // custom command to set a preset volume
       else if(x.command == $IR_PRESET)
-        id(volume_num).set( id(preset_volume_num).state );
+        id(volume_num).make_call().set_value( id(preset_volume_num).state ).perform();
 
       // control music.
       else if(x.command == $IR_PLAY || x.command == $IR_NEXT || x.command == $IR_PREV) {
