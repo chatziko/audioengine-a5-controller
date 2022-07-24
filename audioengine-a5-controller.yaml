@@ -24,6 +24,14 @@ substitutions:
   IR_NEXT:    "0xdf06"
   IR_RELEASE: "0xdf07"
 
+  # Philips remote
+  PH_POWER:    "0x0d"
+  PH_VOL_UP:   "0x10"
+  PH_VOL_DOWN: "0x11"
+  PH_PLAY:    "0x2c"
+  PH_PREV:    "0x2b"
+  PH_NEXT:    "0x28"
+
   GPIO_CTRL_ROTARY_A:      "5"
   GPIO_CTRL_ROTARY_B:      "18"
   GPIO_CTRL_ROTARY_BUTTON: "19"
@@ -558,7 +566,7 @@ remote_receiver:
     number: ${GPIO_CTRL_IR}
     inverted: true
   # dump: [nec]
-  dump: [nec, raw]
+  dump: [nec, rc6]
   on_nec:
     lambda: |-
       ESP_LOGD("on_nec", "Got Nec IR, command %x", x.command);
@@ -589,6 +597,34 @@ remote_receiver:
       }
   on_raw:
     lambda: id(ir_raw_codes)++;   // just count, see the send_spotify_event script
+  on_rc6: # philips remote
+    lambda: |-
+      ESP_LOGD("on_rc6", "Got Philips IR, command %x", x.command);
+
+      // Recreate the original remote's commands
+      if(x.command == $PH_VOL_UP)
+        id(volume_num).make_call().set_value( id(volume_num).state + 1 ).perform();
+      else if(x.command == $PH_VOL_DOWN)
+        id(volume_num).make_call().set_value( id(volume_num).state - 1 ).perform();
+      else if(x.command == $PH_POWER)
+        id(power_sw).toggle();
+
+      // control music.
+      else if(x.command == $PH_PLAY || x.command == $PH_NEXT || x.command == $PH_PREV) {
+        if(id(send_spotify_event).is_running()) {
+          // Note: the Apple remote sends raw commands while pressing the button, the Philips remote repeats the same command.
+          // So we increase the count if the script is already running (see the send_spotify_event script).
+          id(ir_raw_codes)++;
+        } else {
+          id(spotify_event) = "esphome.appd.spotify.";
+          id(spotify_event) += x.command == $PH_PLAY ? "play_pause" : x.command == $PH_NEXT ? "next" : "previous";
+          id(ir_raw_codes) = 0;
+
+          id(send_spotify_event).execute();
+
+          id(update_led).execute();   // blink the led to show that the command ran
+        }
+      }
 
 # Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
 # time:
