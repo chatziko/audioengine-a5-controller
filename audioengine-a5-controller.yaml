@@ -78,10 +78,6 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
-  - id: spotify_event
-    type: std::string
-    restore_value: no
-    initial_value: '""'
 
 # The number component creates inputs that appear in HA UI, and
 # can be changed either from ESP32 or from HA.
@@ -297,18 +293,20 @@ script:
 
     # Sends a spotify event, delayed so that we can handle double IR commands
   - id: send_spotify_event
+    parameters:
+      spotify_event: string
     then:
     - delay: 200ms   # wait, to handle long presses
     - lambda: |-
-        ESP_LOGD("send_spotify_event", "%s, %d", id(spotify_event).c_str(), id(ir_raw_codes));
+        ESP_LOGD("send_spotify_event", "%s, %d", spotify_event.c_str(), id(ir_raw_codes));
 
         // the apple remote sends raw events while the button is pressed. If 3 arrive during the 200ms delay
         // we consider this a long press, and do prev_playlist/next_playlist instead of prev/next.
-        if(id(ir_raw_codes) >= 3 && id(spotify_event) != "esphome.appd.spotify.play_pause")
-          id(spotify_event) += "_playlist";
+        if(id(ir_raw_codes) >= 3 && spotify_event != "esphome.appd.spotify.play_pause")
+          spotify_event += "_playlist";
 
         api::HomeassistantServiceResponse resp;
-        resp.service = id(spotify_event);
+        resp.service = spotify_event;
         resp.is_event = true;
         api::global_api_server->send_homeassistant_service_call(resp);
 
@@ -568,11 +566,11 @@ remote_receiver:
 
       // control music.
       else if(x.command == $IR_PLAY || x.command == $IR_NEXT || x.command == $IR_PREV) {
-        id(spotify_event) = "esphome.appd.spotify.";
-        id(spotify_event) += x.command == $IR_PLAY ? "play_pause" : x.command == $IR_NEXT ? "next" : "previous";
+        std::string spotify_event = "esphome.appd.spotify.";
+        spotify_event += x.command == $IR_PLAY ? "play_pause" : x.command == $IR_NEXT ? "next" : "previous";
         id(ir_raw_codes) = 0;
 
-        id(send_spotify_event).execute();
+        id(send_spotify_event).execute(spotify_event);
 
         id(update_led).execute();   // blink the led to show that the command ran
       }
@@ -597,11 +595,11 @@ remote_receiver:
           // So we increase the count if the script is already running (see the send_spotify_event script).
           id(ir_raw_codes)++;
         } else {
-          id(spotify_event) = "esphome.appd.spotify.";
-          id(spotify_event) += x.command == $PH_PLAY ? "play_pause" : x.command == $PH_NEXT ? "next" : "previous";
+          std::string spotify_event = "esphome.appd.spotify.";
+          spotify_event += x.command == $PH_PLAY ? "play_pause" : x.command == $PH_NEXT ? "next" : "previous";
           id(ir_raw_codes) = 0;
 
-          id(send_spotify_event).execute();
+          id(send_spotify_event).execute(spotify_event);
 
           id(update_led).execute();   // blink the led to show that the command ran
         }
