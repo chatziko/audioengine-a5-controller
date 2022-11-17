@@ -48,12 +48,15 @@ esphome:
   platform: ESP32
   board: esp32doit-devkit-v1
   on_boot:
-  # initial values for outputs (probably not needed, but better be safe)
-  - output.turn_off: a5_rotary_a
-  - output.turn_off: a5_rotary_b
-  - output.turn_off: a5_rotary_button
-  # sync
-  - script.execute: sync_speaker_state
+    # initial values for outputs (probably not needed, but better be safe)
+    - output.turn_off: a5_rotary_a
+    - output.turn_off: a5_rotary_b
+    - output.turn_off: a5_rotary_button
+
+    # update the state, resetting first in case the speaker is out of sync
+    - script.execute: reset_cur_state
+    - script.wait:    reset_cur_state
+    - script.execute: update_speaker_state
 
 globals:
   # The current state of the speaker.
@@ -75,14 +78,6 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
-  - id: booting
-    type: bool
-    restore_value: no
-    initial_value: '1'
-  # - id: last_update
-  #   type: long
-  #   restore_value: no
-  #   initial_value: '0'
   - id: ir_raw_codes
     type: int
     restore_value: no
@@ -133,14 +128,12 @@ script:
     then:
     - lambda: |-
         // When multiple updates are queued, it is common that a previous update has already done
-        // the job. If so, stop immediately. Also disable while booting (until sync_speaker_state finishes).
-        if(id(booting) ||
+        // the job. If so, stop immediately. Also disable while resetting (until reset_cur_state finishes).
+        if(id(reset_cur_state).is_running() ||
            (id(volume_num).state == id(volume_cur) &&
             id(power_sw).state == id(power_cur ) &&
             id(mute_sw ).state == id(mute_cur  )))
           id(update_speaker_state).stop();
-
-        // id(last_update) = id(ha_time).now().timestamp;
 
       # Handle some interactions between the volume/power/mute controls
     - logger.log:
@@ -150,67 +143,69 @@ script:
         // When the speaker is in poweroff/mute mode, a VOL_UP/VOL_DOWN command wakes it up (and the command itlsef
         // is ignored). So if volume is changed, we automatically set power=1 & mute=0
         if(id(volume_cur) != id(volume_num).state) {
-          if(!id(power_sw).state) id(power_sw).turn_on ();
-          if( id(mute_sw ).state) id(mute_sw ).turn_off();
+          if(!id(power_sw).state) id(power_sw).publish_state(1);
+          if( id(mute_sw ).state) id(mute_sw ).publish_state(0);
         }
 
-        // Setting power=0 while mute is on: the poweroff command automatically cancels mute (no need to manually unmute),
-        // so we unset both id(mute_sw) and id(mute_cur), pretending it is already unset.
+        // Setting power=0 while mute is on: the poweroff command cancels mute (no need to manually unmute),
+        // so we unmute ourselves.
         // Note: the opposite (setting mute when power=0), is not allowed by the mute_sw's turn_on_action!
-        if(!id(power_sw).state && id(mute_cur)) {
-          id(mute_sw).turn_off();
-          id(mute_cur) = false;
-        }
+        if(!id(power_sw).state && id(mute_cur))
+          id(mute_sw).publish_state(0);
+
+    # Since we cannot read the speaker's state, if it gets out of sync for any reason, we want to be able to recover. For this reason
+    # when the speaker is turned on, we reset the current state before applying the update.
+    - if:
+        condition:
+          lambda: 'return !id(power_cur) && id(power_sw).state;'    # only when the speaker is turned on
+        then:
+        - script.execute: reset_cur_state
+        - script.wait:    reset_cur_state
+
     - logger.log:
-        format: "           -> power %d -> %d, mute %d -> %d, volume %d -> %d"
+        format: "   execute -> power %d -> %d, mute %d -> %d, volume %d -> %d"
         args: [ "id(power_cur)", "id(power_sw).state", "id(mute_cur)", "id(mute_sw).state", "id(volume_cur)", "(uint)id(volume_num).state" ]
 
-    # Do the updates
+    # Do the updates.
     - script.execute: update_led
 
-    - script.execute: update_power_mute
-    - script.wait:    update_power_mute
-
-    - script.execute: update_volume
+    # Update 
+    - script.execute: update_mute     # mute before volume, because volume changes when muted cause to unmute and then are ignored
+    - script.wait:    update_mute
+    - script.execute: update_volume   # volume before power, to allow setting volume 1 before power-off
     - script.wait:    update_volume
+    - script.execute: update_power    # power last. Note: we don't care about volume changes duing power-on, cause power-on
+    - script.wait:    update_power    # is handled by reset_cur_state anyway, when we arrive here we are always powered on!
 
     - script.wait: update_led   # make sure that the led effect has finished before starting another update
 
-
-  # Power and mute ##############################################################
-  - id: update_power_mute
+  # Mute ##############################################################
+  - id: update_mute
     then:
-    - if:
+      if:
         condition:
-          lambda: 'return id(mute_cur) != id(mute_sw).state && id(power_sw).state;'
+          lambda: 'return id(mute_cur) != id(mute_sw).state;'
         then:
-        - logger.log: "Sending MUTE"
-        - remote_transmitter.transmit_nec:
-            address: $IR_ADDRESS
-            command: $IR_MUTE
-    - if:
+          - logger.log: "Sending MUTE"
+          - remote_transmitter.transmit_nec:
+              address: $IR_ADDRESS
+              command: $IR_MUTE
+          - lambda: id(mute_cur) = id(mute_sw).state;
+          - delay: 500ms      # for edge cases (muted -> poweroff)
+
+  # Power ##############################################################
+  - id: update_power
+    then:
+      if:
         condition:
           lambda: 'return id(power_cur) != id(power_sw).state;'
         then:
-        # Weird A5 beheviour: if we go to poweroff with volume == 0, waking up automatically sets volume = 50!!
-        # As a workaround hack, we set volume = 1 before poweroff (so we'll have volume = 1 after wakeup, not 0,
-        # but it's better than suddenly going all the way to 25!).
-        - if:
-            condition:
-              lambda: 'return !id(power_sw).state && id(volume_num).state == 0;'
-            then:
-            - lambda: 'id(volume_num).make_call().set_value(1).perform();'
-            - script.execute: update_volume
-            - script.wait: update_volume
-
-        - logger.log: "Sending ROTARY BUTTON"
-        - output.turn_on: a5_rotary_button
-        - delay: 5ms
-        - output.turn_off: a5_rotary_button
-        - delay: 50ms
-    - lambda: |-
-        id(power_cur) = id(power_sw).state;
-        id(mute_cur) = id(mute_sw).state;
+          - logger.log: "Sending ROTARY BUTTON"
+          - output.turn_on: a5_rotary_button
+          - delay: 5ms
+          - output.turn_off: a5_rotary_button
+          - delay: 50ms
+          - lambda: id(power_cur) = id(power_sw).state;
 
   # Volume  ####################################################################
   #
@@ -222,19 +217,23 @@ script:
   - id: update_volume
     then:
     - lambda: |-
-        id(temp_steps) = id(volume_num).state - id(volume_cur);
-        if(id(temp_steps) == 0) return;          // nothing to do
+        // When the speaker is powered off, we set the real volume to 1 (although volume_cur is left to the configured value, to
+        //  be able to track volume changes). This is because we will run reset_cur_state anyway on power on,
+        // (which will lower the volume and then raise it again), and it will be smoother if it runs from low volume.
+        // Also this prevents a strange A5 A5 beheviour: if we go to poweroff with volume == 0, waking up automatically sets volume = 50!!
+        //
+        int target_volume = id(power_sw).state ? id(volume_num).state : 1;
+        id(temp_steps) = target_volume - id(volume_cur);
         id(volume_cur) = id(volume_num).state;
 
-        // to recover from a potential out-of-sync state, when we reach the bottom we add
-        // some extra steps to ensure that the volume really reaches 0.
-        if(id(volume_num).state == 0 ) id(temp_steps) -= 5;
+        if(id(temp_steps) == 0)
+          id(update_volume).stop();          // nothing to do
 
     - script.execute: send_rotary_pulses
     - script.wait:    send_rotary_pulses
 
-  # Script that generates id(temp_steps) rotary pulses. Used by update_speaker_state & sync_speaker_state.
-  # Each one is a square pulse of 10ms HIGH + 10ms LOW, out of sync by 5ms between
+  # Script that generates id(temp_steps) rotary pulses. Used by update_speaker_state & reset_cur_state.
+  # Each one is a square pulse of 5ms HIGH + 5ms LOW, out of sync by 5ms between
   # a5_rotary_a and a5_rotary_b (which one fires first determines the direction of movement).
   # Maybe we could use PWM for this, but it's simple to do manually and allows for more control.
   - id: send_rotary_pulses
@@ -272,49 +271,32 @@ script:
         transition_length: 40ms
 
 
-  # This script "forces" the speaker state to match the values of id(volume_num)/id(power_sw)/id(mute_sw),
-  # __no matter when the intial state of the speaker is__. It's used on restart, to make sure that
-  # we are on sync with the speaker, before doing the normal updates.
+  # This script "resets" the speaker state to the following values:
+  #   volume_cur = 0, power_cur = true, mute_cur = false
+  # __no matter when the intial state of the speaker is__. It's used on restart and also when the speaker
+  # is turned on, to make sure that we are on sync with the speaker, before doing the normal updates.
   #
-  - id: sync_speaker_state
+  - id: reset_cur_state
     then:
-    - delay: 3s   # maybe the speaker is also booting, wait a bit to be safe
-    - logger.log:
-        format: "Sync state: power %d, mute %d, volume %d"
-        args: [ "id(power_cur)", "id(mute_cur)", "id(volume_cur)" ]
+    - logger.log: reset_cur_state
 
-    # Start by sending 55 VOL_DOWN commands to the speaker, which always leads to the
-    # volume going down to 0 (and waking up, if it is in poweroff/mute mode).
-    - lambda: "id(temp_steps) = -55;"
+    # First send a VOL_DOWN and wait 1 sec for the speaker to wakeup/unmute (in case it is in poweroff/mute mode).
+    # It is important to wait 1 sec, otherwise the following commands might be ignored.
+    - lambda: "id(temp_steps) = -1;"
+    - script.execute: send_rotary_pulses
+    - script.wait:    send_rotary_pulses
+    - delay: 500ms
+
+    # Then send by sending 50 VOL_DOWN commands, which leads to the volume going down to 0.
+    - lambda: "id(temp_steps) = -50;"
     - script.execute: send_rotary_pulses
     - script.wait:    send_rotary_pulses
 
-    # We first update the volume (cause volume changes will cancel the poweroff/mute). We copy volume_cur to
-    # id(volume_num), set volume_cur = 0 (since the speaker current is at 0 volume), and update.
+    # Now the state is known.
     - lambda: |-
-        id(volume_num).make_call().set_value((id(volume_cur))).perform();
         id(volume_cur) = 0;
-    - script.execute: update_volume
-    - script.wait:    update_volume
-    - delay: 200ms
-
-    # Similar update for power & mute
-    - lambda: |-
-        id(power_sw).publish_state(id(power_cur));
-        id(mute_sw ).publish_state(id(mute_cur ));
         id(power_cur) = true;
         id(mute_cur) = false;
-    - script.execute: update_power_mute
-    - script.wait:    update_power_mute
-
-    # Update the led
-    - script.execute: update_led
-    - script.wait:    update_led
-
-    # Done booting
-    - lambda: |-
-        // id(last_update) = id(ha_time).now().timestamp;
-        id(booting) = false;
 
     # Sends a spotify event, delayed so that we can handle double IR commands
   - id: send_spotify_event
@@ -414,10 +396,10 @@ button:
     name: ${upper_name} Restart
 
 
-  ####################################### DEBUG SWITCHES ################################3
+  ####################################### DEBUG BUTTONS ################################3
   # - platform: template
   #   name: "debug_send_power"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending Power"
   #     - remote_transmitter.transmit_nec:
   #         address: $IR_ADDRESS
@@ -426,7 +408,7 @@ button:
   # - platform: template
   #   id: "debug_send_voldown"
   #   name: "debug_send_voldown"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending voldown"
   #     - remote_transmitter.transmit_nec:
   #         address: $IR_ADDRESS
@@ -435,7 +417,7 @@ button:
   # - platform: template
   #   id: "debug_countdown_to_zero"
   #   name: "debug_countdown_to_zero"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending voldown until zero"
   #     - remote_transmitter.transmit_nec:
   #         address: $IR_ADDRESS
@@ -451,7 +433,7 @@ button:
   # - platform: template
   #   id: "debug_send_volup"
   #   name: "debug_send_volup"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending volup"
   #     - remote_transmitter.transmit_nec:
   #         address: $IR_ADDRESS
@@ -460,7 +442,7 @@ button:
   # - platform: template
   #   id: "debug_send_mute"
   #   name: "debug_send_mute"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending mure"
   #     - remote_transmitter.transmit_nec:
   #         address: $IR_ADDRESS
@@ -469,7 +451,7 @@ button:
   # - platform: template
   #   id: "debug_send_rotary_up"
   #   name: "debug_send_rotary_up"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending rotary up"
   #     - output.turn_on: a5_rotary_a
   #     - delay: 5ms
@@ -478,12 +460,12 @@ button:
   #     - output.turn_off: a5_rotary_a
   #     - delay: 5ms
   #     - output.turn_off: a5_rotary_b
-  #     - delay: 10ms
-
+  #     - delay: 15ms
+  # 
   # - platform: template
   #   id: "debug_send_rotary_down"
   #   name: "debug_send_rotary_down"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "sending rotary down"
   #     - output.turn_on: a5_rotary_b
   #     - delay: 5ms
@@ -492,22 +474,24 @@ button:
   #     - output.turn_off: a5_rotary_b
   #     - delay: 5ms
   #     - output.turn_off: a5_rotary_a
-  #     - delay: 10ms
-
+  #     - delay: 15ms
+  # 
   # - platform: template
   #   id: "debug_send_rotary_button"
   #   name: "debug_send_rotary_button"
-  #   turn_on_action:
+  #   on_press:
   #     - logger.log: "pressing rotary button"
   #     - output.turn_on: a5_rotary_button
   #     - delay: 5ms
   #     - output.turn_off: a5_rotary_button
-
+  # 
   # - platform: template
-  #   id: "debug_sync_speaker_state"
-  #   name: "debug_sync_speaker_state"
-  #   turn_on_action:
-  #     - script.execute: sync_speaker_state
+  #   id: "debug_reset_state"
+  #   name: "debug_reset_state"
+  #   on_press:
+  #     - script.execute: reset_cur_state
+  #     - script.wait: reset_cur_state
+  #     - script.execute: update_speaker_state
 ########################################################################################
 
 
@@ -625,21 +609,6 @@ remote_receiver:
           id(update_led).execute();   // blink the led to show that the command ran
         }
       }
-
-# Turn off the speaker late at night, if there have been at least 3 idle hours (no state change)
-# time:
-#   - platform: homeassistant
-#     id: ha_time
-#     on_time:
-#       # Every 10 minutes, between 3am and 8am
-#       - seconds: 0
-#         minutes: /10
-#         hours: 3-8
-#         then:
-#           lambda: |-
-#             long now = id(ha_time).now().timestamp;
-#             if(id(last_update) != 0 && now != 0 && now - id(last_update) > 3*60*60)   // time is 0 if not synchronized
-#               id(power_sw).turn_off();
 
 
 
