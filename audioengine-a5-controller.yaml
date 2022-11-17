@@ -74,10 +74,6 @@ globals:
     initial_value: '0'
 
   # Non-persistent variables used in lambdas
-  - id: temp_steps
-    type: int
-    restore_value: no
-    initial_value: '0'
   - id: ir_raw_codes
     type: int
     restore_value: no
@@ -223,37 +219,36 @@ script:
         // Also this prevents a strange A5 A5 beheviour: if we go to poweroff with volume == 0, waking up automatically sets volume = 50!!
         //
         int target_volume = id(power_sw).state ? id(volume_num).state : 1;
-        id(temp_steps) = target_volume - id(volume_cur);
+        int steps = target_volume - id(volume_cur);
         id(volume_cur) = id(volume_num).state;
 
-        if(id(temp_steps) == 0)
-          id(update_volume).stop();          // nothing to do
+        if(steps != 0)    // not really needed, but maybe it's a bit faster to avoid running the script
+          id(send_rotary_pulses).execute(steps);
 
-    - script.execute: send_rotary_pulses
-    - script.wait:    send_rotary_pulses
+    - script.wait: send_rotary_pulses   # if the script wasn't started this will have no effect
 
-  # Script that generates id(temp_steps) rotary pulses. Used by update_speaker_state & reset_cur_state.
+  # Script that generates `steps` rotary pulses. Used by update_speaker_state & reset_cur_state.
   # Each one is a square pulse of 5ms HIGH + 5ms LOW, out of sync by 5ms between
   # a5_rotary_a and a5_rotary_b (which one fires first determines the direction of movement).
   # Maybe we could use PWM for this, but it's simple to do manually and allows for more control.
   - id: send_rotary_pulses
+    parameters:
+      steps: int
     then:
     - logger.log:
         format: "Sending %d ROTARY PULSES"
-        args: [ "id(temp_steps)" ]
-    - while: 
-        condition:
-          lambda: 'return id(temp_steps) != 0;'
+        args: [ "steps" ]
+    - repeat:           # note: steps cannot be modified, because nested lambdas receive it by value! So we use 'repeat' instead of 'while'
+        count: !lambda 'return std::abs(steps);'
         then:
-        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_a : a5_rotary_b ).turn_on();"
+        - lambda: "id( steps > 0 ? a5_rotary_a : a5_rotary_b ).turn_on();"
         - delay: 5ms
-        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_b : a5_rotary_a ).turn_on();"
+        - lambda: "id( steps > 0 ? a5_rotary_b : a5_rotary_a ).turn_on();"
         - delay: 5ms
-        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_a : a5_rotary_b ).turn_off();"
+        - lambda: "id( steps > 0 ? a5_rotary_a : a5_rotary_b ).turn_off();"
         - delay: 5ms
-        - lambda: "id( id(temp_steps) > 0 ? a5_rotary_b : a5_rotary_a ).turn_off();"
+        - lambda: "id( steps > 0 ? a5_rotary_b : a5_rotary_a ).turn_off();"
         - delay: 15ms     # some room to separate the commands, if missing sometimes a few steps are not recorded
-        - lambda: 'id(temp_steps) += (id(temp_steps) > 0 ? -1 : 1);'
 
   # Script to update the led. It is launched by update_speaker_state and runs in parallel to it
   - id: update_led
@@ -282,15 +277,17 @@ script:
 
     # First send a VOL_DOWN and wait 1 sec for the speaker to wakeup/unmute (in case it is in poweroff/mute mode).
     # It is important to wait 1 sec, otherwise the following commands might be ignored.
-    - lambda: "id(temp_steps) = -1;"
-    - script.execute: send_rotary_pulses
-    - script.wait:    send_rotary_pulses
+    - script.execute:
+        id: send_rotary_pulses
+        steps: -1
+    - script.wait: send_rotary_pulses
     - delay: 500ms
 
     # Then send by sending 50 VOL_DOWN commands, which leads to the volume going down to 0.
-    - lambda: "id(temp_steps) = -50;"
-    - script.execute: send_rotary_pulses
-    - script.wait:    send_rotary_pulses
+    - script.execute:
+        id: send_rotary_pulses
+        steps: -50
+    - script.wait: send_rotary_pulses
 
     # Now the state is known.
     - lambda: |-
