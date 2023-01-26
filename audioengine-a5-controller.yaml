@@ -38,10 +38,10 @@ substitutions:
   GPIO_CTRL_IR:            "3"
   GPIO_CTRL_LED:           "23"
 
-  GPIO_A5_ROTARY_A:        "4"
+  GPIO_A5_ROTARY_A:        "13"
   GPIO_A5_ROTARY_B:        "16"
   GPIO_A5_ROTARY_BUTTON:   "17"
-  GPIO_A5_IR:              "15"
+  GPIO_A5_IR:              "27"
 
 esphome:
   name: ${name}
