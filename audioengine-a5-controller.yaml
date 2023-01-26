@@ -56,6 +56,7 @@ esphome:
     # update the state, resetting first in case the speaker is out of sync
     - script.execute: reset_cur_state
     - script.wait:    reset_cur_state
+    - lambda:         id(booted) = true;
     - script.execute: update_speaker_state
 
 globals:
@@ -78,6 +79,10 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  - id: booted        # to ensure that no updates happen until reset_cur_state finishes
+    type: bool
+    restore_value: no
+    initial_value: 'false'
 
 # The number component creates inputs that appear in HA UI, and
 # can be changed either from ESP32 or from HA.
@@ -121,7 +126,8 @@ script:
     - lambda: |-
         // When multiple updates are queued, it is common that a previous update has already done
         // the job. If so, stop immediately. Also disable while resetting (until reset_cur_state finishes).
-        if(id(reset_cur_state).is_running() ||
+        if(!id(booted) ||
+           id(reset_cur_state).is_running() ||
            (id(volume_num).state == id(volume_cur) &&
             id(power_sw).state == id(power_cur ) &&
             id(mute_sw ).state == id(mute_cur  )))
