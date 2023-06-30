@@ -394,11 +394,6 @@ switch:
     on_turn_off:
     - script.execute: update_speaker_state
 
-# Also a switch to easily restart the ESP32
-button:
-  - platform: restart
-    name: ${upper_name} Restart
-
 
   ####################################### DEBUG BUTTONS ################################3
   # - platform: template
