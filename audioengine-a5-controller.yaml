@@ -44,9 +44,6 @@ substitutions:
   GPIO_A5_IR:              "27"
 
 esphome:
-  name: ${name}
-  platform: ESP32
-  board: esp32doit-devkit-v1
   on_boot:
     # initial values for outputs (probably not needed, but better be safe)
     - output.turn_off: a5_rotary_a
