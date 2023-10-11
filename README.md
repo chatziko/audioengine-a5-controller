@@ -166,10 +166,10 @@ The A5 has a USB plug in the back which can be used to charge a smartphone
 while playing music. The USB is connected to the 5V power supply shown
 in the image above, so we can very conveniently use it to power our ESP32.
 
-Since I don't use the USB, I chose to "steal" the nice cable with the
+Since I don't use the USB (and it's more useful to repurpose it anyway, see below), I chose to "steal" the nice cable with the
 protective foam that connected the USB to the 5V, so I desoldered it and
 added it to my controller board. This also freed some space for
-mounting our board. But of course there should be enough power for
+mounting our board. But in principle there should be enough power for
 both the ESP32 and the USB, if one wishes to keep it.
 
 
@@ -188,6 +188,23 @@ enough space so that it does not interfere with any other component
 of the speaker. The result looks like it came straight from the factory:
 
 ![](images/controller-installed.jpg)
+
+
+#### Repurposing the USB plug
+
+A downside of having the ESP32 board inside the speaker is that, if we lose
+wireless connectivity for any reason, we need to unmount and open the speaker
+to debug the issue and flash new firmware. This happened to me
+once when experimenting with a buggy bluetooth component.
+
+A neat solution: connect the female USB plug in the back of the speaker to the devboard's
+USB! The four pins of the plug are clearly visible at
+its mounting location on the board. We just need to connect a micro USB cable to the
+devboard, cut the other end, and solder the wires directly on the four pins (make sure
+to respect the order).
+Then, with the speaker fully mounted, we can simply switch it off, connect the
+USB plug to a laptop, and we
+get a serial connection for viewing logs, flashing firmware, etc.
 
 
 
