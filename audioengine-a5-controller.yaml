@@ -328,7 +328,8 @@ sensor:
     on_clockwise:
       number.set:
         id: volume_num
-        value: !lambda 'return id(volume_num).state + 1;'
+        # baby-mode, limit to 50%
+        value: !lambda 'return std::min(id(volume_num).state + 1, 25.f);'
     on_anticlockwise:
       number.set:
         id: volume_num
